@@ -1,0 +1,13 @@
+{application, car,
+ [
+  {description, "car: content-addressed-riak"},
+  {vsn, "0.3"},
+  {modules, []},
+  {registered, [car_sup]},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, {car_app, []}},
+  {env, []}
+ ]}.
