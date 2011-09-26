@@ -1,13 +1,16 @@
 -module(car).
 
--compile(export_all).
 -export([store_blob/1]).
 -export([get_blob_value/1]).
 -export([store_permanode/2]).
 -export([get_permanode_points_to/1]).
+-export([get_permanode_by_index/2]).
+-export([objects_by_index/2]).
+-export([index_bind/1]).
 -export([store_object/1, store_object/2]).
 -export([create_object/0, create_object/1]).
 -export([update_object/2, update_object/3]).
+-export([statebox_to_hash/1]).
 
 -define(POINTER_IDX,  "points-to").
 -define(REPLACES_IDX, "replaces").
@@ -93,15 +96,13 @@ get_blob_value(Hash) when is_binary(Hash) ->
 %%%----------------------------------------------------------------------
 %%% Permanode Creation, Reading, Merging
 %%%----------------------------------------------------------------------
-statebox_value_to_hash(Statebox) ->
-  % Get the new resolved statebox value
-  ResolvedVal = statebox:value(Statebox),
+statebox_to_hash(Statebox) ->
+  % Hash the entire statebox to get its storage key.
+  % NB: Stateboxes have last modified times, so *each* statebox will be a
+  % unique hash.  Not entirely useful in a content-addressed system.
+  % But -- Objects/stateboxes *point* to stable blob data.  Ideally.
 
-  % Hash the resolved value to use as a key name
-  % Ignore statebox queues and last modified when making the new hash.
-  % Technically, this can still be considered content-addressed since the
-  % statebox values are metadata.  :-\
-  ResolvedBin = term_to_binary(ResolvedVal),
+  ResolvedBin = term_to_binary(Statebox),
   stronghash(ResolvedBin).
 
 permanode() ->
@@ -123,6 +124,17 @@ store_permanode(PointsTo, Metadatas) when
              end,
   write(PermaHash, PointsTo, Combined),
   PermaHash.
+
+objects_by_index(IndexField, IndexValue) ->
+  FoundNodes = get_permanode_by_index(IndexField, IndexValue),
+  % points_to auto-resolves siblings
+  % we can parallelize the crap outta this:
+  StateboxHashes = [get_permanode_points_to(N) || N <- FoundNodes],
+  % Now return a list of {ObjectHash, Orddict}.
+  % ObjectHash *MUST* be given to update with the list of mutations.
+  [{H, object_value(binary_to_term(get_blob_value(H)))} ||
+    H <- StateboxHashes].
+
 
 get_permanode_by_index(IndexField, IndexValue) ->
   IndexName = iolist_to_binary([IndexField, <<"_bin">>]),
@@ -156,7 +168,7 @@ statebox_resolve_permanode(RiakObj) ->
   ResolvedObject = statebox:merge(AllValues),
 
   % Hash the contents of the statebox for the new merge commit name
-  ResolvedHash = statebox_value_to_hash(ResolvedObject),
+  ResolvedHash = statebox_to_hash(ResolvedObject),
 
   % Create index entries noting this new object replaces all constituent nodes
   Replaces = idx_replaces(AllHashes),
@@ -228,7 +240,7 @@ store_object(Statebox) ->
   store_object(Statebox, []).
 
 store_object(Statebox, Idxs) when is_tuple(Statebox) andalso is_list(Idxs) ->
-  ResolvedHash = statebox_value_to_hash(Statebox),
+  ResolvedHash = statebox_to_hash(Statebox),
   write(ResolvedHash, term_to_binary(Statebox, [compressed]), Idxs),
   ResolvedHash.
 
@@ -300,26 +312,11 @@ object_pre_update({Field, {delete_with_value, Value}}) ->
 object_pre_update({Field, clear_value}) ->
   [statebox_orddict:f_erase(Field)].
 
-
 %%%----------------------------------------------------------------------
-%%% Updating Objects
+%%% Object Reading
 %%%----------------------------------------------------------------------
-set_attribute(ObjRef, Field, What) ->
-  % Read ObjRef.  Write Field.  Write ObjRef.
-  car_riak:field(ObjRef, Field, What).
-
-set_append_attribute(ObjRef, Field, What) ->
-  % Read ObjRef, Read Field, Append What to Field, Write ObjRef.
-  car_riak:field(ObjRef, Field, What).
-
-become(Ref, What) ->
-  update_object(Ref, [{<<"is">>, {write_value, What}}]).
-
-
-%%%----------------------------------------------------------------------
-%%% Reading Things
-%%%----------------------------------------------------------------------
-
+object_value(Statebox) ->
+  statebox:get_value(Statebox).
 
 
 %%%----------------------------------------------------------------------
@@ -331,7 +328,7 @@ become(Ref, What) ->
 %%%----------------------------------------------------------------------
 %%% Helpers
 %%%----------------------------------------------------------------------
--compile({inline, [shahash/1, stronghash/1, dehash/1]}).
+-compile({inline, [shahash/1, stronghash/1]}).
 stronghash(Bytes) ->
   shahash(Bytes).
 
@@ -340,6 +337,3 @@ shahash(Bytes) ->
   Type = "sha1-",
   Hex = mochihex:to_hex(Hash),
   iolist_to_binary([Type, Hex]).
-
-dehash(<<"sha1-", HexHash>>) ->
-  mochihex:to_bin(HexHash).
