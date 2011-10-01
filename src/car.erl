@@ -8,6 +8,7 @@
 -export([objects_by_index/2]).
 -export([index_bind/1]).
 -export([store_object/1, store_object/2]).
+-export([write/2]).
 -export([create_object/0, create_object/1]).
 -export([update_object/2, update_object/3]).
 -export([statebox_to_hash/1]).
@@ -70,6 +71,10 @@ index_bind(FieldValueProplist) when is_list(FieldValueProplist) ->
 %%%----------------------------------------------------------------------
 write(Obj) when is_tuple(Obj) ->
   car_riak:put(Obj).
+
+write(Proplist, Idxs) when is_list(Proplist) andalso is_list(Idxs) ->
+  Statebox = car:create_object(Proplist),
+  store_object(Statebox, Idxs).
 
 write(Ref, Bytes, Idxs) when is_binary(Bytes) andalso is_list(Idxs) ->
   write(Ref, Bytes, dict:from_list(Idxs));
