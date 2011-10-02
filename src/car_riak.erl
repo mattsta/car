@@ -57,8 +57,10 @@ get_value(Ref) ->
   get_value(?CB, Ref).
 
 get_value(Bucket, Ref) ->
-  {ok, Got} = get(Bucket, Ref),
-  riakc_obj:get_value(Got).
+  case get(Bucket, Ref) of
+            {ok, Got} -> riakc_obj:get_value(Got);
+    {error, notfound} -> throw({notfound, Bucket, Ref})
+  end.
 
 get_index(Idx, Value) ->
   get_index(?CB, Idx, Value).
