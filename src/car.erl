@@ -74,7 +74,9 @@ write(Obj) when is_tuple(Obj) ->
 
 write(Proplist, Idxs) when is_list(Proplist) andalso is_list(Idxs) ->
   Statebox = car:create_object(Proplist),
-  store_object(Statebox, Idxs).
+  StateboxHash = store_object(Statebox),
+  % Assumes we pre-ran index_bind on incoming Idxs:
+  car:store_permanode(StateboxHash, Idxs).
 
 write(Ref, Bytes, Idxs) when is_binary(Bytes) andalso is_list(Idxs) ->
   write(Ref, Bytes, dict:from_list(Idxs));
@@ -244,6 +246,8 @@ idx_replaces(OldHashes) when is_list(OldHashes) ->
 store_object(Statebox) ->
   store_object(Statebox, []).
 
+% Note: This makes a raw state box with an index that IS NOT a permanode.
+% It will break permanode lookups by index.  Probably should never use it.
 store_object(Statebox, Idxs) when is_tuple(Statebox) andalso is_list(Idxs) ->
   ResolvedHash = statebox_to_hash(Statebox),
   write(ResolvedHash, term_to_binary(Statebox, [compressed]), Idxs),
