@@ -325,7 +325,7 @@ object_pre_update({Field, clear_value}) ->
 %%% Object Reading
 %%%----------------------------------------------------------------------
 object_value(Statebox) ->
-  statebox:get_value(Statebox).
+  statebox:value(Statebox).
 
 
 %%%----------------------------------------------------------------------
