@@ -15,6 +15,7 @@
 
 -define(POINTER_IDX,  "points-to").
 -define(REPLACES_IDX, "replaces").
+-define(INDEX_DELIM,  <<":_:">>).
 
 %%%----------------------------------------------------------------------
 %%% Index Management
@@ -112,6 +113,16 @@ statebox_to_hash(Statebox) ->
   ResolvedBin = term_to_binary(Statebox),
   stronghash(ResolvedBin).
 
+statebox(Bin) when is_binary(Bin) ->
+  binary_to_term(Bin);
+statebox(Tuple) when element(1, Tuple) =:= riakc_obj ->
+  statebox(riakc_obj:get_value(Tuple)).
+
+statebox_dict(RiakObj) when element(1, RiakObj) =:= riakc_obj ->
+  statebox_dict(statebox(RiakObj));
+statebox_dict(Statebox) when element(1, Statebox) =:= statebox ->
+  statebox:value(Statebox).
+
 permanode() ->
   UniqueData = {node(), now()},
   % this is a unique dumbness -- we're storing non-content-addressed content
@@ -139,7 +150,7 @@ objects_by_index(IndexField, IndexValue) ->
   StateboxHashes = [get_permanode_points_to(N) || N <- FoundNodes],
   % Now return a list of {ObjectHash, Orddict}.
   % ObjectHash *MUST* be given to update with the list of mutations.
-  [{H, object_value(binary_to_term(get_blob_value(H)))} ||
+  [{H, object_value(statebox(get_blob_value(H)))} ||
     H <- StateboxHashes].
 
 
@@ -169,7 +180,7 @@ statebox_resolve_permanode(RiakObj) ->
   AllObjects = [get(H) || H <- AllHashes],  % FIXME: this should be parallel
 
   % Get all values on all the objects.  The values are #statebox{} serialized.
-  AllValues = [binary_to_term(riakc_obj:get_value(O)) || O <- AllObjects],
+  AllValues = [statebox(riakc_obj:get_value(O)) || O <- AllObjects],
 
   % Merge all retrieved values according to their statebox mutations
   ResolvedObject = statebox:merge(AllValues),
@@ -204,15 +215,59 @@ update_permanodes_for_object(OldHash, NewHash) ->
   car_riak:for_each_pointer_index(MoveOldHashToNewHash, OldHash).
 
 replace_permanode_pointer(ExistingPermaHash, _OldHash, NewHash) ->
-  NewMetadata = dict:from_list(index_wrap(idx_points_to(NewHash))),
-
   {ok, RiakObj} = fetch(ExistingPermaHash),
-  UpdatedMd = riakc_obj:update_metadata(RiakObj, NewMetadata),
+  RecoveredIndexes = transfer_indexes(riakc_obj:get_metadata(RiakObj), NewHash),
+
+  NewIdxs = [idx_points_to(NewHash) | RecoveredIndexes],
+  NewIdxsFormatted = dict:from_list(index_wrap(NewIdxs)),
+
+  UpdatedMd = riakc_obj:update_metadata(RiakObj, NewIdxsFormatted),
   NewEverythingAdded = riakc_obj:update_value(UpdatedMd, NewHash),
 
   write(NewEverythingAdded).
 
+transfer_indexes(CurrentIdxs, NewHash) ->
+  {ok, NewObj} = fetch(NewHash),
+  NewSB = statebox_dict(NewObj),
+  case dict:find(<<"index">>, CurrentIdxs) of
+    {ok, Idxs} -> Keys = proplists:get_keys(Idxs),
+                  KeyNames = [field_names_from_index_name(K) || K <- Keys],
+                  UseKeyNames = [K || K <- KeyNames, K =/= []],
+                  % field_names_from_index_name returns:
+                  %  {IndexField, UserValueFields}
+                  %  Read each UserValueField, join with :_: then add
+                  % {I, NewlyReadAndCombinedFields} to the return list.
+                  Recovered = lists:map(fun({I, Fields}) ->
+                    Vals = [orddict:find(Field, NewSB) || Field <- Fields],
+                    case lists:member(error, Vals) of
+                               % BUG: once this field has no value, it will
+                               % never be indexed by any update again.
+                       true -> {I, []};  % some field wasn't found now
+                      false -> {I, join_idx_delim([V || {ok, V} <- Vals])}
+                    end
+                  end,
+                  UseKeyNames),
+                  [{K, V} || {K, V} <- Recovered, V =/= []];
+         error -> []
+  end.
 
+field_names_from_index_name(IndexName) when is_binary(IndexName) ->
+  case binary:split(IndexName, ?INDEX_DELIM, [global]) of
+              [IndexName] -> [];
+     I when length(I) > 3 -> {IndexName,
+                              % BUG: don't self-name index fields *_bin*
+                              % Ideally: tokenize on _, remove last, re-join.
+                              [binary:replace(E, <<"_bin">>, <<"">>) ||
+                                E <- lists:sublist(I, 4, 100)]};
+                        _ -> []
+  end;
+field_names_from_index_name(L) when is_list(L) ->
+  field_names_from_index_name(list_to_binary(L)).
+
+join_idx_delim([]) ->
+  <<>>;
+join_idx_delim([H|T]) ->
+  iolist_to_binary([H, [<<?INDEX_DELIM/binary, B/binary>> || B <- T]]).
 
 %%%----------------------------------------------------------------------
 %%% Index Metadata
@@ -291,7 +346,7 @@ update_object(RiakObj, OldHash, Mutations, {replace_metadata, NewMd}) when
 
 update_object(RiakObj, OldHash, Mutations, {resolved_metadata, UseMd}) ->
   Val = riakc_obj:get_value(RiakObj),
-  EVal = binary_to_term(Val),
+  EVal = statebox(Val),
   % Mutations are ~ {Field, {LocalOpName, Value}}
   TotalMutations = [object_pre_update(M) || M <- Mutations],
   Resolved = statebox:modify(TotalMutations, EVal),
